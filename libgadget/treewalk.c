@@ -962,12 +962,12 @@ treewalk_run(TreeWalk * tw, int * active_set, size_t size, struct gravshort_tree
             struct CommBuffer res_exports = {0};
             ev_recv_export_result(&res_exports, &counts, tw);
 #ifdef TREE_CPU
-            message(0, "Starting ev_secondary (cpu) for %s with %ld particles\n", tw->ev_label);
+            message(0, "Starting ev_secondary (cpu) for %s\n", tw->ev_label);
             struct CommBuffer res_imports = ev_secondary(&imports, &counts, tw);
 #else
             struct CommBuffer res_imports;
             if (TreeParams_ptr == NULL) {
-                message(0, "Starting ev_secondary (cpu) for %s with %ld particles\n", tw->ev_label);
+                message(0, "Starting ev_secondary (cpu) for %s\n", tw->ev_label);
                 res_imports = ev_secondary(&imports, &counts, tw); // cpu version still used for FoF now
             }
             else {

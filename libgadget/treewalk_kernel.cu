@@ -7,6 +7,9 @@
 // treewalk_kernel.cu
 #include "shortrange-kernel_device.cu"
 // #include "gravity.h"
+#include "density.c"
+
+#define FACT1 0.366025403785    /* FACT1 = 0.5 * (sqrt(3)-1) */
 
 #define NTAB_device (sizeof(shortrange_force_kernels) / sizeof(shortrange_force_kernels[0]))
 /*! variables for short-range lookup table */
@@ -457,6 +460,273 @@ ev_init_thread_device(TreeWalk * const tw, LocalTreeWalk * lv)
     //     lv->ngblist = tw->Ngblist + thread_id * tw->tree->NumParticles;
 }
 
+/******
+ *
+ *  This function represents the core of the SPH density computation.
+ *
+ *  The neighbours of the particle in the Query are enumerated, and results
+ *  are stored into the Result object.
+ *
+ *  Upon start-up we initialize the iterator with the density kernels used in
+ *  the computation. The assumption is the density kernels are slow to
+ *  initialize.
+ *
+ */
+
+__device__ static void
+density_ngbiter_device(
+        TreeWalkQueryDensity * I,
+        TreeWalkResultDensity * O,
+        TreeWalkNgbIterDensity * iter,
+        LocalTreeWalk * lv)
+{
+    if(iter->base.other == -1) {
+        const double h = I->Hsml;
+        density_kernel_init(&iter->kernel, h, DensityParams.DensityKernelType);
+        iter->kernel_volume = density_kernel_volume(&iter->kernel);
+
+        iter->base.Hsml = h;
+        iter->base.mask = GASMASK; /* gas only */
+        iter->base.symmetric = NGB_TREEFIND_ASYMMETRIC;
+        return;
+    }
+    const int other = iter->base.other;
+    const double r = iter->base.r;
+    const double r2 = iter->base.r2;
+    const double * dist = iter->base.dist;
+
+    if(P[other].Mass == 0) {
+        endrun(12, "Density found zero mass particle %d type %d id %ld pos %g %g %g\n",
+               other, P[other].Type, P[other].ID, P[other].Pos[0], P[other].Pos[1], P[other].Pos[2]);
+    }
+
+    if(r2 < iter->kernel.HH)
+    {
+        /* For the BH we wish to exclude wind particles from the density,
+         * because they are excluded from the accretion treewalk.*/
+        if(I->Type == 5 && winds_is_particle_decoupled(other))
+            return;
+
+        const double u = r * iter->kernel.Hinv;
+        const double wk = density_kernel_wk(&iter->kernel, u);
+        O->Ngb += wk * iter->kernel_volume;
+
+        const double dwk = density_kernel_dwk(&iter->kernel, u);
+
+        const double mass_j = P[other].Mass;
+
+        O->Rho += (mass_j * wk);
+
+        /* Hinv is here because O->DhsmlDensity is drho / dH.
+         * nothing to worry here */
+        double density_dW = density_kernel_dW(&iter->kernel, u, wk, dwk);
+        O->DhsmlDensity += mass_j * density_dW;
+
+        double EntVarPred;
+        MyFloat VelPred[3];
+        struct DensityPriv * priv = DENSITY_GET_PRIV(lv->tw);
+        SPH_VelPred(other, VelPred, &priv->kf);
+
+        if(priv->SPH_predicted->EntVarPred) {
+            #pragma omp atomic read
+            EntVarPred = priv->SPH_predicted->EntVarPred[P[other].PI];
+            /* Lazily compute the predicted quantities. We can do this
+            * with minimal locking since nothing happens should we compute them twice.
+            * Zero can be the special value since there should never be zero entropy.*/
+            if(EntVarPred == 0) {
+                EntVarPred = SPH_EntVarPred(other, priv->times);
+                #pragma omp atomic write
+                priv->SPH_predicted->EntVarPred[P[other].PI] = EntVarPred;
+            }
+        }
+        else
+            EntVarPred = SPH_EntVarPred(other, priv->times);
+
+        if(DENSITY_GET_PRIV(lv->tw)->DoEgyDensity) {
+            O->EgyRho += mass_j * EntVarPred * wk;
+            O->DhsmlEgyDensity += mass_j * EntVarPred * density_dW;
+        }
+
+        if(r > 0)
+        {
+            double fac = mass_j * dwk / r;
+            double dv[3];
+            double rot[3];
+            int d;
+            for(d = 0; d < 3; d ++) {
+                dv[d] = I->Vel[d] - VelPred[d];
+            }
+            O->Div += -fac * dotproduct(dist, dv);
+
+            crossproduct(dv, dist, rot);
+            for(d = 0; d < 3; d ++) {
+                O->Rot[d] += fac * rot[d];
+            }
+            if(DENSITY_GET_PRIV(lv->tw)->GradRho) {
+                for (d = 0; d < 3; d ++)
+                    O->GradRho[d] += fac * dist[d];
+            }
+        }
+    }
+}
+
+/**
+ * Cull a node.
+ *
+ * Returns 1 if the node shall be opened;
+ * Returns 0 if the node has no business with this query.
+ */
+__device__ static int
+cull_node_device(const TreeWalkQueryBase * const I, const TreeWalkNgbIterBase * const iter, const struct NODE * const current, const double BoxSize)
+{
+    double dist;
+    if(iter->symmetric == NGB_TREEFIND_SYMMETRIC) {
+        dist = DMAX(current->mom.hmax, iter->Hsml) + 0.5 * current->len;
+    } else {
+        dist = iter->Hsml + 0.5 * current->len;
+    }
+
+    double r2 = 0;
+    double dx = 0;
+    /* do each direction */
+    int d;
+    for(d = 0; d < 3; d ++) {
+        dx = NEAREST(current->center[d] - I->Pos[d], BoxSize);
+        if(dx > dist) return 0;
+        if(dx < -dist) return 0;
+        r2 += dx * dx;
+    }
+    /* now test against the minimal sphere enclosing everything */
+    dist += FACT1 * current->len;
+
+    if(r2 > dist * dist) {
+        return 0;
+    }
+    return 1;
+}
+
+/*****
+ * Variant of ngbiter that doesn't use the Ngblist.
+ * The ngblist is generally preferred for memory locality reasons.
+ * Use this variant if the evaluation
+ * wants to change the search radius, such as for knn algorithms
+ * or some density code. Don't use it if the treewalk modifies other particles.
+ * */
+__device__ int treewalk_visit_nolist_ngbiter_device(TreeWalkQueryBase * I,
+            TreeWalkResultBase * O,
+            LocalTreeWalk * lv)
+{
+    // TreeWalkNgbIterBase * iter = (TreeWalkNgbIterBase *) alloca(lv->tw->ngbiter_type_elsize);
+    TreeWalkNgbIterBase iter;
+
+    /* Kick-start the iteration with other == -1 */
+    iter.other = -1;
+    // lv->tw->ngbiter(I, O, &iter, lv);
+    density_ngbiter_device((TreeWalkQueryDensity *) I, (TreeWalkResultDensity *) O, (TreeWalkNgbIterDensity *) &iter, lv); // the types should be changed intially instead of conversion
+
+    int64_t ninteractions = 0;
+    int inode;
+    for(inode = 0; inode < NODELISTLENGTH && I->NodeList[inode] >= 0; inode++)
+    {
+        int no = I->NodeList[inode];
+        const ForceTree * tree = lv->tw->tree;
+        const double BoxSize = tree->BoxSize;
+
+        while(no >= 0)
+        {
+            struct NODE *current = &tree->Nodes[no];
+
+            /* When walking exported particles we start from the encompassing top-level node,
+            * so if we get back to a top-level node again we are done.*/
+            if(lv->mode == TREEWALK_GHOSTS) {
+                /* The first node is always top-level*/
+                if(current->f.TopLevel && no != I->NodeList[inode]) {
+                    /* we reached a top-level node again, which means that we are done with the branch */
+                    break;
+                }
+            }
+
+            /* Cull the node */
+            if(0 == cull_node_device(I, &iter, current, BoxSize)) {
+                /* in case the node can be discarded */
+                no = current->sibling;
+                continue;
+            }
+            if(lv->mode == TREEWALK_TOPTREE) {
+                if(current->f.ChildType == PSEUDO_NODE_TYPE) {
+                    /* Export the pseudo particle*/
+                    if(-1 == treewalk_export_particle(lv, current->s.suns[0]))
+                        return -1;
+                    /* Move sideways*/
+                    no = current->sibling;
+                    continue;
+                }
+                /* Only walk toptree nodes here*/
+                if(current->f.TopLevel && !current->f.InternalTopLevel) {
+                    no = current->sibling;
+                    continue;
+                }
+            }
+            /* Node contains relevant particles, add them.*/
+            else {
+                if(current->f.ChildType == PARTICLE_NODE_TYPE) {
+                    int i;
+                    int * suns = current->s.suns;
+                    for (i = 0; i < current->s.noccupied; i++) {
+                        /* Now evaluate a particle for the list*/
+                        int other = suns[i];
+                        /* Skip garbage*/
+                        if(P[other].IsGarbage)
+                            continue;
+                        /* In case the type of the particle has changed since the tree was built.
+                        * Happens for wind treewalk for gas turned into stars on this timestep.*/
+                        if(!((1<<P[other].Type) & iter.mask))
+                            continue;
+
+                        double dist = iter.Hsml;
+                        double r2 = 0;
+                        int d;
+                        double h2 = dist * dist;
+                        for(d = 0; d < 3; d ++) {
+                            /* the distance vector points to 'other' */
+                            iter.dist[d] = NEAREST(I->Pos[d] - P[other].Pos[d], BoxSize);
+                            r2 += iter.dist[d] * iter.dist[d];
+                            if(r2 > h2) break;
+                        }
+                        if(r2 > h2) continue;
+
+                        /* update the iter and call the iteration function*/
+                        iter.r2 = r2;
+                        iter.other = other;
+                        iter.r = sqrt(r2);
+                        lv->tw->ngbiter(I, O, &iter, lv);
+                        ninteractions++;
+                    }
+                    /* Move sideways*/
+                    no = current->sibling;
+                    continue;
+                }
+                else if(current->f.ChildType == PSEUDO_NODE_TYPE) {
+                    /* pseudo particle */
+                    if(lv->mode == TREEWALK_GHOSTS) {
+                        endrun(12312, "Secondary for particle %d from node %d found pseudo at %d.\n", lv->target, I->NodeList[inode], no);
+                    } else {
+                        /* This has already been evaluated with the toptree. Move sideways.*/
+                        no = current->sibling;
+                        continue;
+                    }
+                }
+            }
+            /* ok, we need to open the node */
+            no = current->s.suns[0];
+        }
+    }
+
+    treewalk_add_counters(lv, ninteractions);
+
+    return 0;
+}
+
 __global__ void treewalk_kernel(TreeWalk *tw, struct particle_data *particles, const struct gravshort_tree_params * TreeParams_ptr, unsigned long long int *maxNinteractions, unsigned long long int *minNinteractions, unsigned long long int *Ninteractions, const double GravitySoftening) {
     GravitySoftening_device = GravitySoftening;
 
@@ -480,8 +750,13 @@ __global__ void treewalk_kernel(TreeWalk *tw, struct particle_data *particles, c
 
         // Perform treewalk for particle
         lv.target = i;
-        force_treeev_shortrange_device(&input, &output, &lv, TreeParams_ptr, particles);
-
+        if (strcmp(tw->ev_label, "DENSITY") == 0) {
+            // treewalk_visit_nolist_ngbiter_device((TreeWalkQueryBase *) &input, (TreeWalkResultBase *) &output, &lv, particles);
+        } else if (strcmp(tw->ev_label, "GRAVTREE") == 0)
+        {
+            force_treeev_shortrange_device(&input, &output, &lv, TreeParams_ptr, particles);
+        }
+        
         // Reduce results for this particle
         treewalk_reduce_result_device(tw, &output, i, TREEWALK_PRIMARY, particles);
 

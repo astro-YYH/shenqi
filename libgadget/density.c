@@ -16,6 +16,7 @@
 #include "utils.h"
 #include "gravity.h"
 #include "winds.h"
+#include <cuda_runtime.h>
 
 static struct density_params DensityParams;
 
@@ -234,10 +235,17 @@ static void density_copy(int place, TreeWalkQueryDensity * I, TreeWalk * tw);
 void
 density(const ActiveParticles * act, int update_hsml, int DoEgyDensity, int BlackHoleOn, const DriftKickTimes times, Cosmology * CP, struct sph_pred_data * SPH_predicted, MyFloat * GradRho_mag, const ForceTree * const tree)
 {
-    TreeWalk tw[1] = {{0}};
-    struct DensityPriv priv[1];
+    // TreeWalk tw[1] = {{0}};
+    TreeWalk *tw;
+    cudaMallocManaged(&tw, sizeof(TreeWalk));  // Allocate TreeWalk structure with Unified Memory
+    memset(tw, 0, sizeof(TreeWalk));           // Zero-initialize the structure
+    struct DensityPriv *priv;
+    cudaMallocManaged(&priv, sizeof(struct DensityPriv));
 
-    tw->ev_label = "DENSITY";
+    // tw->ev_label = "DENSITY";
+    cudaMallocManaged(&tw->ev_label, sizeof(char) * strlen("DENSITY") + 1);  // Allocate memory for ev_label
+    strcpy(tw->ev_label, "DENSITY");
+
     tw->visit = (TreeWalkVisitFunction) treewalk_visit_nolist_ngbiter;
     tw->NoNgblist = 1;
     tw->ngbiter_type_elsize = sizeof(TreeWalkNgbIterDensity);

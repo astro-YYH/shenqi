@@ -97,10 +97,8 @@ gravpm_force(PetaPM * pm, DomainDecomp * ddecomp, Cosmology * CP, double Time, d
     ForceTree * Tree_ptr;
     cudaMallocManaged(&Tree_ptr, sizeof(ForceTree));
     memset(Tree_ptr, 0, sizeof(ForceTree));
-    message(0, "Tree allocated by cudaMallocManaged test.\n");
     /* We include neutrinos in this tree unconditionally, so all particles have a Region.*/
     force_tree_full(Tree_ptr, ddecomp, 0, PowerOutputDir);
-    message(0, "Tree constructed test.\n");
 
     /* Set up parameters*/
     GravPM.Time = Time;
