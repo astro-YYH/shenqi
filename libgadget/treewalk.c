@@ -307,7 +307,7 @@ ev_primary(TreeWalk * tw)
 
 /* returns struct containing export counts */
 static void
-ev_primary_gpu(TreeWalk * tw, struct gravshort_tree_params* TreeParams_ptr)
+ev_primary_gpu(TreeWalk * tw, const struct gravshort_tree_params * TreeParams_ptr, const struct density_params * DensityParams_ptr)
 {
     unsigned long long int *maxNinteractions, *minNinteractions, *Ninteractions;
     cudaMallocManaged(&maxNinteractions, sizeof(unsigned long long int));
@@ -321,7 +321,12 @@ ev_primary_gpu(TreeWalk * tw, struct gravshort_tree_params* TreeParams_ptr)
     
     message(0, "Calling run_treewalk_kernel\n");
     // Call the GPU kernel wrapper for treewalk
-    run_treewalk_kernel(tw, P, TreeParams_ptr, GravitySoftening, maxNinteractions, minNinteractions, Ninteractions);
+    if (TreeParams_ptr != NULL)
+        run_treewalk_kernel(tw, P, TreeParams_ptr, GravitySoftening, maxNinteractions, minNinteractions, Ninteractions);
+    else if (DensityParams_ptr != NULL)
+        run_treewalk_density_kernel(tw, P, DensityParams_ptr, maxNinteractions, minNinteractions, Ninteractions);
+    else
+        endrun(1, "TreeParams_ptr and DensityParams_ptr are both NULL\n");
 
     tw->maxNinteractions = (int64_t) *maxNinteractions;
     tw->minNinteractions = (int64_t) *minNinteractions;
@@ -886,7 +891,7 @@ static void ev_reduce_export_result(struct CommBuffer * exportbuf, struct ImpExp
  *
  * */
 void
-treewalk_run(TreeWalk * tw, int * active_set, size_t size, struct gravshort_tree_params* TreeParams_ptr)
+treewalk_run(TreeWalk * tw, int * active_set, size_t size, const struct gravshort_tree_params* TreeParams_ptr, const struct density_params * DensityParams_ptr)
 {
     if(!force_tree_allocated(tw->tree)) {
         endrun(0, "Tree has been freed before this treewalk.\n");
@@ -947,7 +952,7 @@ treewalk_run(TreeWalk * tw, int * active_set, size_t size, struct gravshort_tree
                 }
                 else {
                     message(0, "Starting ev_primary (gpu) for %s with %ld particles\n", tw->ev_label, tw->WorkSetSize);
-                    ev_primary_gpu(tw, TreeParams_ptr); /* do local particles and prepare export list */
+                    ev_primary_gpu(tw, TreeParams_ptr, DensityParams_ptr); /* do local particles and prepare export list */
                 }
 #endif
                 message(0, "Finished ev_primary for %s with %ld particles\n", tw->ev_label, tw->WorkSetSize);
@@ -1383,7 +1388,7 @@ int treewalk_visit_nolist_ngbiter(TreeWalkQueryBase * I,
 /* This function does treewalk_run in a loop, allocating a queue to allow some particles to be redone.
  * This loop is used primarily in density estimation.*/
 void
-treewalk_do_hsml_loop(TreeWalk * tw, int * queue, int64_t queuesize, int update_hsml)
+treewalk_do_hsml_loop(TreeWalk * tw, int * queue, int64_t queuesize, int update_hsml, const struct density_params * DensityParams_ptr)
 {
     int NumThreads = omp_get_max_threads();
     tw->maxnumngb = ta_malloc("numngb", double, NumThreads);
@@ -1423,7 +1428,7 @@ treewalk_do_hsml_loop(TreeWalk * tw, int * queue, int64_t queuesize, int update_
         tw->NPRedo = loop.srcs;
         tw->NPLeft = loop.sizes;
         tw->Redo_thread_alloc = loop.total_size;
-        treewalk_run(tw, CurQueue, size);
+        treewalk_run(tw, CurQueue, size, NULL, DensityParams_ptr);
 
         /* Now done with the current queue*/
         if(orig_queue_alloc || tw->Niteration > 1)

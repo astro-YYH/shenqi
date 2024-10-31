@@ -191,7 +191,7 @@ void set_treewalk_params(ParameterSet * ps);
 /* Do the distributed tree walking. Warning: as this is a threaded treewalk,
  * it may call tw->visit on particles more than once and in a noneterministic order.
  * Your module should behave correctly in this case! */
-void treewalk_run(TreeWalk * tw, int * active_set, size_t size, struct gravshort_tree_params* TreeParams_ptr = NULL);
+void treewalk_run(TreeWalk * tw, int * active_set, size_t size, struct gravshort_tree_params* TreeParams_ptr = NULL, struct density_params * DensityParams_ptr = NULL);
 
 int treewalk_visit_ngbiter(TreeWalkQueryBase * I,
             TreeWalkResultBase * O,
@@ -215,7 +215,7 @@ int treewalk_visit_nolist_ngbiter(TreeWalkQueryBase * I, TreeWalkResultBase * O,
 
 /* This function does treewalk_run in a loop, allocating a queue to allow some particles to be redone.
  * This loop is used primarily in density estimation.*/
-void treewalk_do_hsml_loop(TreeWalk * tw, int * queue, int64_t queuesize, int update_hsml);
+void treewalk_do_hsml_loop(TreeWalk * tw, int * queue, int64_t queuesize, int update_hsml, const struct density_params * DensityParams_ptr = NULL);
 
 /* This function find the closest index in the multi-evaluation list of hsml and numNgb, update left and right bound, and return the new hsml */
 double ngb_narrow_down(double *right, double *left, const double *radius, const double *numNgb, int maxcmpt, int desnumngb, int *closeidx, double BoxSize);

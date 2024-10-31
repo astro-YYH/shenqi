@@ -15,4 +15,6 @@ void run_gravshort_fill_ntab(const enum ShortRangeForceWindowType ShortRangeForc
 
 void run_treewalk_secondary_kernel(TreeWalk *tw, struct particle_data *particles, const struct gravshort_tree_params * TreeParams_ptr, char* databufstart, char* dataresultstart, const int64_t nimports_task);
 
+void run_treewalk_density_kernel(TreeWalk *tw, struct particle_data *particles, const struct density_params * DensityParams_ptr, unsigned long long int *maxNinteractions, unsigned long long int *minNinteractions, unsigned long long int *Ninteractions);
+
 #endif  // TREEWALK_KERNEL_H

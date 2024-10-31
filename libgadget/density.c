@@ -316,9 +316,12 @@ density(const ActiveParticles * act, int update_hsml, int DoEgyDensity, int Blac
     /* allocate buffers to arrange communication */
 
     walltime_measure("/SPH/Density/Init");
-
+    struct density_params * DensityParams_ptr;
+    cudaMallocManaged(&DensityParams_ptr, sizeof(struct density_params));
+    *DensityParams_ptr = DensityParams;
     /* Do the treewalk with looping for hsml*/
-    treewalk_do_hsml_loop(tw, act->ActiveParticle, act->NumActiveParticle, update_hsml);
+    treewalk_do_hsml_loop(tw, act->ActiveParticle, act->NumActiveParticle, update_hsml, DensityParams_ptr);
+    cudaFree(DensityParams_ptr);
 
     if(GradRho_mag) {
         #pragma omp parallel for
