@@ -413,7 +413,7 @@ treewalk_init_query_device_old(TreeWalk *tw, TreeWalkQueryBase *query, int i, co
     grav_short_copy_device(i, query_short, tw, particles);
 }
 __device__ static void
-treewalk_init_result_device(TreeWalk *tw, TreeWalkResultBase * result, TreeWalkQueryBase * query) {
+treewalk_init_result_device(TreeWalk *tw, TreeWalkResultGravShort * result, TreeWalkQueryGravShort * query) {
     memset(result, 0, tw->result_type_elsize);  // Initialize the result structure
 }
 
@@ -482,7 +482,7 @@ __global__ void treewalk_kernel(TreeWalk *tw, struct particle_data *particles, c
 
         // Initialize query and result using device functions
         treewalk_init_query_device(tw, &input, i, NULL, particles);
-        treewalk_init_result_device(tw, (TreeWalkResultBase *)&output, (TreeWalkQueryBase *)&input);
+        treewalk_init_result_device(tw, &output, &input);
 
         // Perform treewalk for particle
         lv.target = i;
@@ -538,7 +538,7 @@ __global__ void treewalk_secondary_kernel(TreeWalk *tw, struct particle_data *pa
 
         // Initialize query and result using device functions
         // treewalk_init_query_device(tw, &input, i, NULL, particles);
-        treewalk_init_result_device(tw, (TreeWalkResultBase *)output, (TreeWalkQueryBase *)input);
+        treewalk_init_result_device(tw, output, input);
 
         // Perform treewalk for particle
         lv.target = -1;
@@ -707,23 +707,24 @@ cull_node_device(const TreeWalkQueryBase * const I, const TreeWalkNgbIterBase * 
  * wants to change the search radius, such as for knn algorithms
  * or some density code. Don't use it if the treewalk modifies other particles.
  * */
-__device__ int treewalk_visit_nolist_ngbiter_device(TreeWalkQueryBase * I,
-            TreeWalkResultBase * O,
+__device__ int treewalk_visit_nolist_ngbiter_device(TreeWalkQueryDensity * I,
+            TreeWalkResultDensity * O,
             LocalTreeWalk * lv, struct particle_data *particles, const struct density_params * DensityParams_ptr)
 {
     // TreeWalkNgbIterBase * iter = (TreeWalkNgbIterBase *) alloca(lv->tw->ngbiter_type_elsize);
-    TreeWalkNgbIterBase iter;
+    // TreeWalkNgbIterBase iter;
+    TreeWalkNgbIterDensity iter;
 
     /* Kick-start the iteration with other == -1 */
-    iter.other = -1;
+    iter.base.other = -1;
     // lv->tw->ngbiter(I, O, &iter, lv);
-    density_ngbiter_device((TreeWalkQueryDensity *) I, (TreeWalkResultDensity *) O, (TreeWalkNgbIterDensity *) &iter, lv, particles, DensityParams_ptr); // the types should be changed intially instead of conversion
+    density_ngbiter_device(I, O, &iter, lv, particles, DensityParams_ptr); // the types should be changed intially instead of conversion
 
     int64_t ninteractions = 0;
     int inode;
-    for(inode = 0; inode < NODELISTLENGTH && I->NodeList[inode] >= 0; inode++)
+    for(inode = 0; inode < NODELISTLENGTH && I->base.NodeList[inode] >= 0; inode++)
     {
-        int no = I->NodeList[inode];
+        int no = I->base.NodeList[inode];
         const ForceTree * tree = lv->tw->tree;
         const double BoxSize = tree->BoxSize;
 
@@ -735,14 +736,14 @@ __device__ int treewalk_visit_nolist_ngbiter_device(TreeWalkQueryBase * I,
             * so if we get back to a top-level node again we are done.*/
             if(lv->mode == TREEWALK_GHOSTS) {
                 /* The first node is always top-level*/
-                if(current->f.TopLevel && no != I->NodeList[inode]) {
+                if(current->f.TopLevel && no != I->base.NodeList[inode]) {
                     /* we reached a top-level node again, which means that we are done with the branch */
                     break;
                 }
             }
 
             /* Cull the node */
-            if(0 == cull_node_device(I, &iter, current, BoxSize)) {
+            if(0 == cull_node_device((TreeWalkQueryBase *) I, (TreeWalkNgbIterBase *) &iter, current, BoxSize)) {
                 /* in case the node can be discarded */
                 no = current->sibling;
                 continue;
@@ -750,7 +751,7 @@ __device__ int treewalk_visit_nolist_ngbiter_device(TreeWalkQueryBase * I,
             if(lv->mode == TREEWALK_TOPTREE) {
                 if(current->f.ChildType == PSEUDO_NODE_TYPE) {
                     /* Export the pseudo particle*/
-                    if(-1 == treewalk_export_particle(lv, current->s.suns[0]))
+                    if(-1 == treewalk_export_particle_device(lv, current->s.suns[0]))
                         return -1;
                     /* Move sideways*/
                     no = current->sibling;
@@ -775,26 +776,27 @@ __device__ int treewalk_visit_nolist_ngbiter_device(TreeWalkQueryBase * I,
                             continue;
                         /* In case the type of the particle has changed since the tree was built.
                         * Happens for wind treewalk for gas turned into stars on this timestep.*/
-                        if(!((1<<particles[other].Type) & iter.mask))
+                        if(!((1<<particles[other].Type) & iter.base.mask))
                             continue;
 
-                        double dist = iter.Hsml;
+                        double dist = iter.base.Hsml;
                         double r2 = 0;
                         int d;
                         double h2 = dist * dist;
                         for(d = 0; d < 3; d ++) {
                             /* the distance vector points to 'other' */
-                            iter.dist[d] = NEAREST(I->Pos[d] - particles[other].Pos[d], BoxSize);
-                            r2 += iter.dist[d] * iter.dist[d];
+                            iter.base.dist[d] = NEAREST(I->base.Pos[d] - particles[other].Pos[d], BoxSize);
+                            r2 += iter.base.dist[d] * iter.base.dist[d];
                             if(r2 > h2) break;
                         }
                         if(r2 > h2) continue;
 
                         /* update the iter and call the iteration function*/
-                        iter.r2 = r2;
-                        iter.other = other;
-                        iter.r = sqrt(r2);
-                        lv->tw->ngbiter(I, O, &iter, lv);
+                        iter.base.r2 = r2;
+                        iter.base.other = other;
+                        iter.base.r = sqrt(r2);
+                        // lv->tw->ngbiter(I, O, &iter, lv);
+                        density_ngbiter_device(I, O, &iter, lv, particles, DensityParams_ptr);
                         ninteractions++;
                     }
                     /* Move sideways*/
@@ -804,7 +806,7 @@ __device__ int treewalk_visit_nolist_ngbiter_device(TreeWalkQueryBase * I,
                 else if(current->f.ChildType == PSEUDO_NODE_TYPE) {
                     /* pseudo particle */
                     if(lv->mode == TREEWALK_GHOSTS) {
-                        endrun(12312, "Secondary for particle %d from node %d found pseudo at %d.\n", lv->target, I->NodeList[inode], no);
+                        // endrun(12312, "Secondary for particle %d from node %d found pseudo at %d.\n", lv->target, I->base.NodeList[inode], no);
                     } else {
                         /* This has already been evaluated with the toptree. Move sideways.*/
                         no = current->sibling;
@@ -817,7 +819,7 @@ __device__ int treewalk_visit_nolist_ngbiter_device(TreeWalkQueryBase * I,
         }
     }
 
-    treewalk_add_counters(lv, ninteractions);
+    treewalk_add_counters_device(lv, ninteractions);
 
     return 0;
 }
@@ -856,6 +858,11 @@ treewalk_init_query_density_device(TreeWalk *tw, TreeWalkQueryDensity *quesry, i
     density_copy_device(i, quesry, tw, particles);
 }
 
+__device__ static void
+treewalk_init_result_density_device(TreeWalk *tw, TreeWalkResultGravShort * result, TreeWalkQueryDensity * query) {
+    memset(result, 0, tw->result_type_elsize);  // Initialize the result structure
+}
+
 __global__ void treewalk_density_kernel(TreeWalk *tw, struct particle_data *particles, const struct density_params * DensityParams_ptr, unsigned long long int *maxNinteractions, unsigned long long int *minNinteractions, unsigned long long int *Ninteractions) {
 
     // Use a direct instance rather than an array
@@ -874,12 +881,12 @@ __global__ void treewalk_density_kernel(TreeWalk *tw, struct particle_data *part
 
         // Initialize query and result using device functions
         treewalk_init_query_density_device(tw, &input, i, NULL, particles);
-        treewalk_init_result_device(tw, (TreeWalkResultBase *) &output, (TreeWalkQueryBase *) &input);
+        treewalk_init_result_density_device(tw, &output, &input);
 
         // Perform treewalk for particle
         lv.target = i;
         if (strcmp(tw->ev_label, "DENSITY") == 0) {
-            treewalk_visit_nolist_ngbiter_device((TreeWalkQueryBase *) &input, (TreeWalkResultBase *) &output, &lv, particles, DensityParams_ptr);
+            treewalk_visit_nolist_ngbiter_device(&input, &output, &lv, particles, DensityParams_ptr);
         }
         
         // Reduce results for this particle
