@@ -30,3 +30,40 @@ SPH_VelPred_device(int i, MyFloat * VelPred, const struct kick_factor_data * kf,
             + particles[i].GravPM[j] * kf->FgravkickB + kf->hydrokicks[particles[i].TimeBinHydro] * SPHP(i).HydroAccel[j];
     }
 }
+
+__device__ static void
+density_reduce_device(int place, TreeWalkResultDensity * remote, enum TreeWalkReduceMode mode, TreeWalk * tw, struct particle_data * particles)
+{
+    TREEWALK_REDUCE(DENSITY_GET_PRIV(tw)->NumNgb[place], remote->Ngb);
+    TREEWALK_REDUCE(DENSITY_GET_PRIV(tw)->DhsmlDensityFactor[place], remote->DhsmlDensity);
+
+    if(particles[place].Type == 0)
+    {
+        TREEWALK_REDUCE(SPHP(place).Density, remote->Rho);
+
+        TREEWALK_REDUCE(SPHP(place).DivVel, remote->Div);
+        int pi = particles[place].PI;
+        TREEWALK_REDUCE(DENSITY_GET_PRIV(tw)->Rot[pi][0], remote->Rot[0]);
+        TREEWALK_REDUCE(DENSITY_GET_PRIV(tw)->Rot[pi][1], remote->Rot[1]);
+        TREEWALK_REDUCE(DENSITY_GET_PRIV(tw)->Rot[pi][2], remote->Rot[2]);
+
+        MyFloat * gradrho = DENSITY_GET_PRIV(tw)->GradRho;
+
+        if(gradrho) {
+            TREEWALK_REDUCE(gradrho[3*pi], remote->GradRho[0]);
+            TREEWALK_REDUCE(gradrho[3*pi+1], remote->GradRho[1]);
+            TREEWALK_REDUCE(gradrho[3*pi+2], remote->GradRho[2]);
+        }
+
+        /*Only used for density independent SPH*/
+        if(DENSITY_GET_PRIV(tw)->DoEgyDensity) {
+            TREEWALK_REDUCE(SPHP(place).EgyWtDensity, remote->EgyRho);
+            TREEWALK_REDUCE(SPHP(place).DhsmlEgyDensityFactor, remote->DhsmlEgyDensity);
+        }
+    }
+    else if(particles[place].Type == 5)
+    {
+        TREEWALK_REDUCE(BHP(place).Density, remote->Rho);
+        TREEWALK_REDUCE(BHP(place).DivVel, remote->Div);
+    }
+}

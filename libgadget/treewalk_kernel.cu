@@ -859,8 +859,16 @@ treewalk_init_query_density_device(TreeWalk *tw, TreeWalkQueryDensity *quesry, i
 }
 
 __device__ static void
-treewalk_init_result_density_device(TreeWalk *tw, TreeWalkResultGravShort * result, TreeWalkQueryDensity * query) {
+treewalk_init_result_density_device(TreeWalk *tw, TreeWalkResultDensity * result, TreeWalkQueryDensity * query) {
     memset(result, 0, tw->result_type_elsize);  // Initialize the result structure
+}
+
+__device__ void
+treewalk_reduce_result_density_device(TreeWalk *tw, TreeWalkResultDensity * result, int i, enum TreeWalkReduceMode mode, struct particle_data *particles) {
+    // if (tw->reduce != NULL) {
+    //     tw->reduce(i, result, mode, tw);  // Call the reduce function
+    // }
+    density_reduce_device(i, result, mode, tw, particles);
 }
 
 __global__ void treewalk_density_kernel(TreeWalk *tw, struct particle_data *particles, const struct density_params * DensityParams_ptr, unsigned long long int *maxNinteractions, unsigned long long int *minNinteractions, unsigned long long int *Ninteractions) {
@@ -890,7 +898,7 @@ __global__ void treewalk_density_kernel(TreeWalk *tw, struct particle_data *part
         }
         
         // Reduce results for this particle
-        treewalk_reduce_result_device(tw, &output, i, TREEWALK_PRIMARY, particles);
+        treewalk_reduce_result_density_device(tw, &output, i, TREEWALK_PRIMARY, particles);
 
         // Update interactions count using atomic operations
         // in the gpu case here, lv.Ninteractions, lv.maxNinteractions, lv.minNinteractions should all be equal (each thread exactly corresponds to one particle)
