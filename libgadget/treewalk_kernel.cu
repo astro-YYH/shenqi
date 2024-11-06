@@ -10,6 +10,7 @@
 #include "density.c"
 #include "densitykernel_dev.cu"
 #include "winds_dev.cu"
+#include "density_dev.cu"
 
 #define FACT1 0.366025403785    /* FACT1 = 0.5 * (sqrt(3)-1) */
 
@@ -412,8 +413,8 @@ treewalk_init_query_device_old(TreeWalk *tw, TreeWalkQueryBase *query, int i, co
     grav_short_copy_device(i, query_short, tw, particles);
 }
 __device__ static void
-treewalk_init_result_device(TreeWalk *tw, TreeWalkResultGravShort *result_short, TreeWalkQueryGravShort *query_short) {
-    memset(result_short, 0, tw->result_type_elsize);  // Initialize the result structure
+treewalk_init_result_device(TreeWalk *tw, TreeWalkResultBase * result, TreeWalkQueryBase * query) {
+    memset(result, 0, tw->result_type_elsize);  // Initialize the result structure
 }
 
 __device__ static void
@@ -481,7 +482,7 @@ __global__ void treewalk_kernel(TreeWalk *tw, struct particle_data *particles, c
 
         // Initialize query and result using device functions
         treewalk_init_query_device(tw, &input, i, NULL, particles);
-        treewalk_init_result_device(tw, &output, &input);
+        treewalk_init_result_device(tw, (TreeWalkResultBase *)&output, (TreeWalkQueryBase *)&input);
 
         // Perform treewalk for particle
         lv.target = i;
@@ -537,7 +538,7 @@ __global__ void treewalk_secondary_kernel(TreeWalk *tw, struct particle_data *pa
 
         // Initialize query and result using device functions
         // treewalk_init_query_device(tw, &input, i, NULL, particles);
-        treewalk_init_result_device(tw, output, input);
+        treewalk_init_result_device(tw, (TreeWalkResultBase *)output, (TreeWalkQueryBase *)input);
 
         // Perform treewalk for particle
         lv.target = -1;
@@ -821,6 +822,40 @@ __device__ int treewalk_visit_nolist_ngbiter_device(TreeWalkQueryBase * I,
     return 0;
 }
 
+__device__ static void
+density_copy_device(int place, TreeWalkQueryDensity * I, TreeWalk * tw, struct particle_data *particles)
+{
+    I->Hsml = particles[place].Hsml;
+
+    I->Type = particles[place].Type;
+
+    if(particles[place].Type != 0)
+    {
+        I->Vel[0] = particles[place].Vel[0];
+        I->Vel[1] = particles[place].Vel[1];
+        I->Vel[2] = particles[place].Vel[2];
+    }
+    else
+        SPH_VelPred_device(place, I->Vel, &DENSITY_GET_PRIV(tw)->kf, particles);
+}
+
+__device__ static void
+treewalk_init_query_density_device(TreeWalk *tw, TreeWalkQueryDensity *quesry, int i, const int *NodeList, struct particle_data *particles) {
+    // Access particle data through particles argument
+    for(int d = 0; d < 3; d++) {
+        quesry->base.Pos[d] = particles[i].Pos[d];  // Use particles instead of P macro
+    }
+
+    if (NodeList) {
+        memcpy(quesry->base.NodeList, NodeList, sizeof(quesry->base.NodeList[0]) * NODELISTLENGTH);
+    } else {
+        quesry->base.NodeList[0] = tw->tree->firstnode;  // root node
+        quesry->base.NodeList[1] = -1;  // terminate immediately
+    }
+
+    density_copy_device(i, quesry, tw, particles);
+}
+
 __global__ void treewalk_density_kernel(TreeWalk *tw, struct particle_data *particles, const struct density_params * DensityParams_ptr, unsigned long long int *maxNinteractions, unsigned long long int *minNinteractions, unsigned long long int *Ninteractions) {
 
     // Use a direct instance rather than an array
@@ -829,7 +864,7 @@ __global__ void treewalk_density_kernel(TreeWalk *tw, struct particle_data *part
     lv.mode = TREEWALK_PRIMARY;
 
     // Avoid stack-heavy allocations, be mindful of per-thread memory usage
-    TreeWalkQueryGravShort input;
+    TreeWalkQueryDensity input;
     TreeWalkResultGravShort output;
 
     int64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -838,8 +873,8 @@ __global__ void treewalk_density_kernel(TreeWalk *tw, struct particle_data *part
         const int64_t i = tw->WorkSet ? (int64_t) tw->WorkSet[tid] : tid;
 
         // Initialize query and result using device functions
-        treewalk_init_query_device(tw, &input, i, NULL, particles);
-        treewalk_init_result_device(tw, &output, &input);
+        treewalk_init_query_density_device(tw, &input, i, NULL, particles);
+        treewalk_init_result_device(tw, (TreeWalkResultBase *) &output, (TreeWalkQueryBase *) &input);
 
         // Perform treewalk for particle
         lv.target = i;
