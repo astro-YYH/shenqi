@@ -872,7 +872,7 @@ __global__ void treewalk_density_kernel(TreeWalk *tw, struct particle_data *part
 
     // Avoid stack-heavy allocations, be mindful of per-thread memory usage
     TreeWalkQueryDensity input;
-    TreeWalkResultGravShort output;
+    TreeWalkResultDensity output;
 
     int64_t tid = blockIdx.x * blockDim.x + threadIdx.x;
 
