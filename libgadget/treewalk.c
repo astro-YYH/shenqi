@@ -324,7 +324,7 @@ ev_primary_gpu(TreeWalk * tw, const struct gravshort_tree_params * TreeParams_pt
     if (TreeParams_ptr != NULL)
         run_treewalk_kernel(tw, P, TreeParams_ptr, GravitySoftening, maxNinteractions, minNinteractions, Ninteractions);
     else if (DensityParams_ptr != NULL)
-        run_treewalk_density_kernel(tw, P, DensityParams_ptr, maxNinteractions, minNinteractions, Ninteractions);
+        run_treewalk_density_kernel(tw, P, (struct sph_particle_data *) SlotsManager->info[0].ptr, DensityParams_ptr, maxNinteractions, minNinteractions, Ninteractions);
     else
         endrun(1, "TreeParams_ptr and DensityParams_ptr are both NULL\n");
 

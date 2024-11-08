@@ -18,6 +18,30 @@ enum WindModel {
     WIND_ISOTROPIC = 512, /* Has no effect: only isotropic winds are implemented*/
 };
 
+/*Parameters of the wind model*/
+struct WindParams
+{
+    enum WindModel WindModel;  /*!< Which wind model is in use? */
+    double WindFreeTravelLength;
+    double WindFreeTravelDensFac;
+    /*Density threshold at which to recouple wind particles.*/
+    double WindFreeTravelDensThresh;
+    /* Maximum time in internal time units to allow the wind to be free-streaming.*/
+    double MaxWindFreeTravelTime;
+    /* used in VS08 and SH03*/
+    double WindEfficiency;
+    double WindSpeed;
+    double WindEnergyFraction;
+    /* used in OFJT10*/
+    double WindSigma0;
+    double WindSpeedFactor;
+    /* Minimum wind velocity for kicked particles, in internal velocity units*/
+    double MinWindVelocity;
+    /* Fraction of wind energy in thermal energy*/
+    double WindThermalFactor;
+};
+
+
 /*Set the parameters of the wind model*/
 void set_winds_params(ParameterSet * ps);
 

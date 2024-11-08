@@ -13,29 +13,10 @@
 #include "hydra.h"
 #include "sfr_eff.h"
 #include "blackhole.h"
+#include "winds_dev.h"
 
 /*Parameters of the wind model*/
-static struct WindParams
-{
-    enum WindModel WindModel;  /*!< Which wind model is in use? */
-    double WindFreeTravelLength;
-    double WindFreeTravelDensFac;
-    /*Density threshold at which to recouple wind particles.*/
-    double WindFreeTravelDensThresh;
-    /* Maximum time in internal time units to allow the wind to be free-streaming.*/
-    double MaxWindFreeTravelTime;
-    /* used in VS08 and SH03*/
-    double WindEfficiency;
-    double WindSpeed;
-    double WindEnergyFraction;
-    /* used in OFJT10*/
-    double WindSigma0;
-    double WindSpeedFactor;
-    /* Minimum wind velocity for kicked particles, in internal velocity units*/
-    double MinWindVelocity;
-    /* Fraction of wind energy in thermal energy*/
-    double WindThermalFactor;
-} wind_params;
+static struct WindParams wind_params;
 
 typedef struct {
     TreeWalkQueryBase base;
@@ -99,6 +80,9 @@ init_winds(double FactorSN, double EgySpecSN, double PhysDensThresh, double Unit
         /* Check for undefined wind models*/
         endrun(1, "WindModel = 0x%X is strange. This shall not happen.\n", wind_params.WindModel);
     }
+    // copy to gpu
+    run_assign_wind_params(&wind_params);
+
 }
 
 int
