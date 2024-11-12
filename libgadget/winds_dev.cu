@@ -13,9 +13,8 @@
 #include "hydra.h"
 #include "sfr_eff.h"
 #include "blackhole.h"
+#include "slotsmanager_dev.h"
 
-#define SphP_dev ((struct sph_particle_data*) sph_particles)
-#define SPHP_dev(i) SphP_dev[particles[i].PI]
 
 /*Parameters of the wind model*/
 __device__ static struct WindParams wind_params_dev;
@@ -27,7 +26,7 @@ void run_assign_wind_params(struct WindParams * wind_params_ptr)
 }
 
 __device__ int
-winds_is_particle_decoupled_device(int i, struct particle_data * particles, struct sph_particle_data* sph_particles)
+winds_is_particle_decoupled_device(int i, struct particle_data * particles)
 {
     if(HAS(wind_params_dev.WindModel, WIND_DECOUPLE_SPH)
         && particles[i].Type == 0 && SPHP_dev(i).DelayTime > 0)

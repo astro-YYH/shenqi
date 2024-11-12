@@ -573,7 +573,7 @@ density_ngbiter_device(
         TreeWalkQueryDensity * I,
         TreeWalkResultDensity * O,
         TreeWalkNgbIterDensity * iter,
-        LocalTreeWalk * lv, struct particle_data *particles, struct sph_particle_data *sph_particles, const struct density_params * DensityParams_ptr)
+        LocalTreeWalk * lv, struct particle_data *particles, const struct density_params * DensityParams_ptr)
 {
     if(iter->base.other == -1) {
         const double h = I->Hsml;
@@ -599,7 +599,7 @@ density_ngbiter_device(
     {
         /* For the BH we wish to exclude wind particles from the density,
          * because they are excluded from the accretion treewalk.*/
-        if(I->Type == 5 && winds_is_particle_decoupled_device(other, particles, sph_particles))
+        if(I->Type == 5 && winds_is_particle_decoupled_device(other, particles))
             return;
 
         const double u = r * iter->kernel.Hinv;
@@ -709,7 +709,7 @@ cull_node_device(const TreeWalkQueryBase * const I, const TreeWalkNgbIterBase * 
  * */
 __device__ int treewalk_visit_nolist_ngbiter_device(TreeWalkQueryDensity * I,
             TreeWalkResultDensity * O,
-            LocalTreeWalk * lv, struct particle_data *particles, struct sph_particle_data * sph_particles, const struct density_params * DensityParams_ptr)
+            LocalTreeWalk * lv, struct particle_data *particles, const struct density_params * DensityParams_ptr)
 {
     // TreeWalkNgbIterBase * iter = (TreeWalkNgbIterBase *) alloca(lv->tw->ngbiter_type_elsize);
     // TreeWalkNgbIterBase iter;
@@ -718,7 +718,7 @@ __device__ int treewalk_visit_nolist_ngbiter_device(TreeWalkQueryDensity * I,
     /* Kick-start the iteration with other == -1 */
     iter.base.other = -1;
     // lv->tw->ngbiter(I, O, &iter, lv);
-    density_ngbiter_device(I, O, &iter, lv, particles, sph_particles, DensityParams_ptr); // the types should be changed intially instead of conversion
+    density_ngbiter_device(I, O, &iter, lv, particles, DensityParams_ptr); // the types should be changed intially instead of conversion
 
     int64_t ninteractions = 0;
     int inode;
@@ -796,7 +796,7 @@ __device__ int treewalk_visit_nolist_ngbiter_device(TreeWalkQueryDensity * I,
                         iter.base.other = other;
                         iter.base.r = sqrt(r2);
                         // lv->tw->ngbiter(I, O, &iter, lv);
-                        density_ngbiter_device(I, O, &iter, lv, particles, sph_particles, DensityParams_ptr);
+                        density_ngbiter_device(I, O, &iter, lv, particles, DensityParams_ptr);
                         ninteractions++;
                     }
                     /* Move sideways*/
@@ -871,7 +871,7 @@ treewalk_reduce_result_density_device(TreeWalk *tw, TreeWalkResultDensity * resu
     density_reduce_device(i, result, mode, tw, particles);
 }
 
-__global__ void treewalk_density_kernel(TreeWalk *tw, struct particle_data *particles, struct sph_particle_data *sph_particles, const struct density_params * DensityParams_ptr, unsigned long long int *maxNinteractions, unsigned long long int *minNinteractions, unsigned long long int *Ninteractions) {
+__global__ void treewalk_density_kernel(TreeWalk *tw, struct particle_data *particles, const struct density_params * DensityParams_ptr, unsigned long long int *maxNinteractions, unsigned long long int *minNinteractions, unsigned long long int *Ninteractions) {
 
     // Use a direct instance rather than an array
     LocalTreeWalk lv;
@@ -893,7 +893,7 @@ __global__ void treewalk_density_kernel(TreeWalk *tw, struct particle_data *part
 
         // Perform treewalk for particle
         lv.target = i;
-        treewalk_visit_nolist_ngbiter_device(&input, &output, &lv, particles, sph_particles, DensityParams_ptr);
+        treewalk_visit_nolist_ngbiter_device(&input, &output, &lv, particles, DensityParams_ptr);
         
         
         // Reduce results for this particle
@@ -907,13 +907,20 @@ __global__ void treewalk_density_kernel(TreeWalk *tw, struct particle_data *part
     }
 }
 
+// Host function to initialize the device pointer
+void set_device_hydro_part(struct sph_particle_data * host_ptr, struct star_particle_data * star_ptr, struct bh_particle_data * bh_ptr) {
+    cudaMemcpyToSymbol(sph_particles, &host_ptr, sizeof(struct sph_particle_data*));
+    cudaMemcpyToSymbol(star_particles, &star_ptr, sizeof(struct star_particle_data*));
+    cudaMemcpyToSymbol(bh_particles, &bh_ptr, sizeof(struct bh_particle_data*));
+}
+
 // Function to launch kernel (wrapper)
-void run_treewalk_density_kernel(TreeWalk *tw, struct particle_data *particles, struct sph_particle_data *sph_particles, const struct density_params * DensityParams_ptr, unsigned long long int *maxNinteractions, unsigned long long int *minNinteractions, unsigned long long int *Ninteractions) {
+void run_treewalk_density_kernel(TreeWalk *tw, struct particle_data *particles, const struct density_params * DensityParams_ptr, unsigned long long int *maxNinteractions, unsigned long long int *minNinteractions, unsigned long long int *Ninteractions) {
     // workset is NULL at a PM step
     int threadsPerBlock = 256;
     int blocks = (tw->WorkSetSize + threadsPerBlock - 1) / threadsPerBlock;
     // treewalk_kernel<<<blocks, threadsPerBlock>>>(tw, particles, TreeParams_ptr, maxNinteractions, minNinteractions, Ninteractions, GravitySoftening);
-    treewalk_density_kernel<<<blocks, threadsPerBlock>>>(tw, particles, sph_particles, DensityParams_ptr, maxNinteractions, minNinteractions, Ninteractions);
+    treewalk_density_kernel<<<blocks, threadsPerBlock>>>(tw, particles, DensityParams_ptr, maxNinteractions, minNinteractions, Ninteractions);
     cudaDeviceSynchronize();
     // cudaError_t err = cudaGetLastError();
     // if (err != cudaSuccess) {

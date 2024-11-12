@@ -15,6 +15,12 @@
 #include "gravity.h"
 #include "winds.h"
 #include <cuda_runtime.h>
+#include "slotsmanager_dev.h"
+
+// Define a global device pointer
+__device__ struct sph_particle_data* sph_particles;
+__device__ struct star_particle_data* star_particles;
+__device__ struct bh_particle_data* bh_particles;
 
 /* Get the predicted velocity for a particle
  * at the current Force computation time ti,
@@ -27,7 +33,7 @@ SPH_VelPred_device(int i, MyFloat * VelPred, const struct kick_factor_data * kf,
     /* Notice that the kick time for gravity and hydro may be different! So the prediction is also different*/
     for(j = 0; j < 3; j++) {
         VelPred[j] = particles[i].Vel[j] + kf->gravkicks[particles[i].TimeBinGravity] * particles[i].FullTreeGravAccel[j]
-            + particles[i].GravPM[j] * kf->FgravkickB + kf->hydrokicks[particles[i].TimeBinHydro] * SPHP(i).HydroAccel[j];
+            + particles[i].GravPM[j] * kf->FgravkickB + kf->hydrokicks[particles[i].TimeBinHydro] * SPHP_dev(i).HydroAccel[j];
     }
 }
 
@@ -39,9 +45,9 @@ density_reduce_device(int place, TreeWalkResultDensity * remote, enum TreeWalkRe
 
     if(particles[place].Type == 0)
     {
-        TREEWALK_REDUCE(SPHP(place).Density, remote->Rho);
+        TREEWALK_REDUCE(SPHP_dev(place).Density, remote->Rho);
 
-        TREEWALK_REDUCE(SPHP(place).DivVel, remote->Div);
+        TREEWALK_REDUCE(SPHP_dev(place).DivVel, remote->Div);
         int pi = particles[place].PI;
         TREEWALK_REDUCE(DENSITY_GET_PRIV(tw)->Rot[pi][0], remote->Rot[0]);
         TREEWALK_REDUCE(DENSITY_GET_PRIV(tw)->Rot[pi][1], remote->Rot[1]);
@@ -57,13 +63,13 @@ density_reduce_device(int place, TreeWalkResultDensity * remote, enum TreeWalkRe
 
         /*Only used for density independent SPH*/
         if(DENSITY_GET_PRIV(tw)->DoEgyDensity) {
-            TREEWALK_REDUCE(SPHP(place).EgyWtDensity, remote->EgyRho);
-            TREEWALK_REDUCE(SPHP(place).DhsmlEgyDensityFactor, remote->DhsmlEgyDensity);
+            TREEWALK_REDUCE(SPHP_dev(place).EgyWtDensity, remote->EgyRho);
+            TREEWALK_REDUCE(SPHP_dev(place).DhsmlEgyDensityFactor, remote->DhsmlEgyDensity);
         }
     }
     else if(particles[place].Type == 5)
     {
-        TREEWALK_REDUCE(BHP(place).Density, remote->Rho);
-        TREEWALK_REDUCE(BHP(place).DivVel, remote->Div);
+        TREEWALK_REDUCE(BHP_dev(place).Density, remote->Rho);
+        TREEWALK_REDUCE(BHP_dev(place).DivVel, remote->Div);
     }
 }

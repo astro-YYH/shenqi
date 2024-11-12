@@ -323,8 +323,11 @@ ev_primary_gpu(TreeWalk * tw, const struct gravshort_tree_params * TreeParams_pt
     // Call the GPU kernel wrapper for treewalk
     if (TreeParams_ptr != NULL)
         run_treewalk_kernel(tw, P, TreeParams_ptr, GravitySoftening, maxNinteractions, minNinteractions, Ninteractions);
-    else if (DensityParams_ptr != NULL)
-        run_treewalk_density_kernel(tw, P, (struct sph_particle_data *) SlotsManager->info[0].ptr, DensityParams_ptr, maxNinteractions, minNinteractions, Ninteractions);
+    else if (DensityParams_ptr != NULL) {
+        set_device_hydro_part((struct sph_particle_data *) SlotsManager->info[0].ptr, (struct star_particle_data *) SlotsManager->info[4].ptr, (struct bh_particle_data *) SlotsManager->info[5].ptr); //such that we can access the device-side pointers (global)
+        run_treewalk_density_kernel(tw, P, DensityParams_ptr, maxNinteractions, minNinteractions, Ninteractions);
+    }
+        
     else
         endrun(1, "TreeParams_ptr and DensityParams_ptr are both NULL\n");
 
