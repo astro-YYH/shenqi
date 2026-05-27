@@ -175,7 +175,7 @@ void treewalk_postprocess_kernel(
 template <typename DerivedType, typename QueryType, typename ResultType, typename LocalTreeWalkType, typename LocalTopTreeWalkType, typename ParamType, typename OutputType>
 class TreeWalkGPU: public TreeWalk<DerivedType, QueryType, ResultType, LocalTreeWalkType, LocalTopTreeWalkType, ParamType, OutputType>
 {
-    private:
+    protected:
     unsigned int * d_maxNinteractions = nullptr;
     unsigned int * d_minNinteractions = nullptr;
 
@@ -196,6 +196,40 @@ class TreeWalkGPU: public TreeWalk<DerivedType, QueryType, ResultType, LocalTree
         }
     }
 
+    void prefetch_if_managed(const void * ptr, const size_t bytes, const int device, const char * label)
+    {
+        if(!ptr || bytes == 0)
+            return;
+
+        cudaPointerAttributes attr;
+        cudaError_t status = cudaPointerGetAttributes(&attr, ptr);
+        if(status != cudaSuccess) {
+            cudaGetLastError();
+            return;
+        }
+        if(attr.type != cudaMemoryTypeManaged)
+            return;
+
+        status = cudaMemPrefetchAsync(ptr, bytes, device);
+        if(status != cudaSuccess)
+            endrun(5, "Failed to prefetch %s to CUDA device %d: %s\n", label, device, cudaGetErrorString(status));
+    }
+
+    void prefetch_common_inputs(int * WorkSet, const int64_t WorkSetSize, particle_data * const particles)
+    {
+        int device;
+        cudaError_t status = cudaGetDevice(&device);
+        if(status != cudaSuccess)
+            endrun(5, "Failed to get CUDA device for prefetch: %s\n", cudaGetErrorString(status));
+
+        prefetch_if_managed(particles, PartManager->NumPart * sizeof(particles[0]), device, "particles");
+        prefetch_if_managed(tree->Nodes_base, (tree->lastnode - tree->firstnode + 1) * sizeof(tree->Nodes_base[0]), device, "tree nodes");
+        prefetch_if_managed(tree->TopLeaves, (tree->NTopLeaves + 1) * sizeof(tree->TopLeaves[0]), device, "top leaves");
+        prefetch_if_managed(WorkSet, WorkSetSize * sizeof(WorkSet[0]), device, "work set");
+        prefetch_if_managed(&priv, sizeof(priv), device, "treewalk parameters");
+        prefetch_if_managed(output, sizeof(*output), device, "treewalk output");
+    }
+
     public:
     using Base = TreeWalk<DerivedType, QueryType, ResultType, LocalTreeWalkType, LocalTopTreeWalkType, ParamType, OutputType>;
     using Base::TreeWalk;
@@ -212,6 +246,21 @@ class TreeWalkGPU: public TreeWalk<DerivedType, QueryType, ResultType, LocalTree
             cudaFree(d_maxNinteractions);
         if(d_minNinteractions)
             cudaFree(d_minNinteractions);
+    }
+
+    int * ev_count_exports_cpu(int * WorkSet, const int64_t WorkSetSize, particle_data * const parts)
+    {
+        return Base::ev_count_exports(WorkSet, WorkSetSize, parts);
+    }
+
+    void ev_free_exports_cpu(int * exportcounts)
+    {
+        Base::ev_free_exports(exportcounts);
+    }
+
+    int64_t ev_toptree_cpu(int * WorkSet, const int64_t WorkSetStart, const int64_t WorkSetSize, particle_data * const particles, int * exportcounts, ExportMemory2 * const exportlist)
+    {
+        return Base::ev_toptree(WorkSet, WorkSetStart, WorkSetSize, particles, exportcounts, exportlist);
     }
 
     /* Build the queue by calling the haswork function on each particle in the active_set.
@@ -346,6 +395,7 @@ class TreeWalkGPU: public TreeWalk<DerivedType, QueryType, ResultType, LocalTree
         if(WorkSetSize == 0)
             return;
         allocate_interaction_counters();
+        prefetch_common_inputs(WorkSet, WorkSetSize, particles);
         /* Reset before launch. memset to 0x00 gives 0 (for sum/max base),
          * memset to 0xFF gives ULLONG_MAX (correct base for atomicMin). */
         cudaError_t status = cudaMemcpy(d_maxNinteractions, &maxNinteractions, sizeof(unsigned int), cudaMemcpyHostToDevice);
@@ -385,13 +435,21 @@ class TreeWalkGPU: public TreeWalk<DerivedType, QueryType, ResultType, LocalTree
     {
         if(WorkSetSize == 0)
             return;
+        prefetch_common_inputs(NULL, 0, particles);
+        int device;
+        cudaError_t status = cudaGetDevice(&device);
+        if(status != cudaSuccess)
+            endrun(5, "Failed to get CUDA device for secondary prefetch: %s\n", cudaGetErrorString(status));
+        prefetch_if_managed(imports, WorkSetSize * sizeof(imports[0]), device, "secondary imports");
+        prefetch_if_managed(results, WorkSetSize * sizeof(results[0]), device, "secondary results");
+
         const int threadsPerBlock = 256;
         const int blocks = (WorkSetSize + threadsPerBlock - 1) / threadsPerBlock;
         /* All arrays need to be managed malloc or device:
          * priv and output should be heap-allocated as placement-new pointers in managed memory */
         treewalk_secondary_kernel<QueryType, ResultType, LocalTreeWalkType, ParamType, OutputType>
         <<<blocks, threadsPerBlock>>>(particles, tree->Nodes, results, imports, WorkSetSize, &priv);
-        cudaError_t status = cudaDeviceSynchronize();
+        status = cudaDeviceSynchronize();
         if (status != cudaSuccess)
             endrun(5, "ev_secondary kernel failed: %s\n", cudaGetErrorString(status));
     }
@@ -401,6 +459,7 @@ class TreeWalkGPU: public TreeWalk<DerivedType, QueryType, ResultType, LocalTree
     {
         if(WorkSetSize == 0)
             return;
+        prefetch_common_inputs(WorkSet, WorkSetSize, particles);
         const int threadsPerBlock = 256;
         const int blocks = (WorkSetSize + threadsPerBlock - 1) / threadsPerBlock;
         treewalk_postprocess_kernel<ParamType, OutputType>

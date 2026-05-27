@@ -552,7 +552,7 @@ public:
         } while(1);
     };
 
-private:
+protected:
     void ev_free_exports(int * exportcounts)
     {
         myfree(exportcounts);
